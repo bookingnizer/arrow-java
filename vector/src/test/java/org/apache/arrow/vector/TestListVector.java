@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -35,20 +34,20 @@ import org.apache.arrow.vector.complex.BaseRepeatedValueVector;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.impl.UnionListReader;
 import org.apache.arrow.vector.complex.impl.UnionListWriter;
-import org.apache.arrow.vector.complex.impl.UuidWriterFactory;
 import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.complex.writer.BaseWriter.ExtensionWriter;
-import org.apache.arrow.vector.holder.UuidHolder;
+import org.apache.arrow.vector.extension.UuidType;
 import org.apache.arrow.vector.holders.DurationHolder;
 import org.apache.arrow.vector.holders.FixedSizeBinaryHolder;
 import org.apache.arrow.vector.holders.TimeStampMilliTZHolder;
+import org.apache.arrow.vector.holders.UuidHolder;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.arrow.vector.types.pojo.UuidType;
 import org.apache.arrow.vector.util.TransferPair;
+import org.apache.arrow.vector.util.UuidUtility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1215,8 +1214,7 @@ public class TestListVector {
       UUID u1 = UUID.randomUUID();
       UUID u2 = UUID.randomUUID();
       writer.startList();
-      ExtensionWriter extensionWriter = writer.extension(new UuidType());
-      extensionWriter.addExtensionTypeWriterFactory(new UuidWriterFactory());
+      ExtensionWriter extensionWriter = writer.extension(UuidType.INSTANCE);
       extensionWriter.writeExtension(u1);
       extensionWriter.writeExtension(u2);
       writer.endList();
@@ -1243,8 +1241,7 @@ public class TestListVector {
       UUID u1 = UUID.randomUUID();
       UUID u2 = UUID.randomUUID();
       writer.startList();
-      ExtensionWriter extensionWriter = writer.extension(new UuidType());
-      extensionWriter.addExtensionTypeWriterFactory(new UuidWriterFactory());
+      ExtensionWriter extensionWriter = writer.extension(UuidType.INSTANCE);
       extensionWriter.writeExtension(u1);
       extensionWriter.writeExtension(u2);
       writer.endList();
@@ -1258,14 +1255,12 @@ public class TestListVector {
       FieldReader uuidReader = reader.reader();
       UuidHolder holder = new UuidHolder();
       uuidReader.read(holder);
-      ByteBuffer bb = ByteBuffer.wrap(holder.value);
-      UUID actualUuid = new UUID(bb.getLong(), bb.getLong());
+      UUID actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
       assertEquals(u1, actualUuid);
       reader.next();
       uuidReader = reader.reader();
       uuidReader.read(holder);
-      bb = ByteBuffer.wrap(holder.value);
-      actualUuid = new UUID(bb.getLong(), bb.getLong());
+      actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
       assertEquals(u2, actualUuid);
     }
   }
@@ -1280,19 +1275,18 @@ public class TestListVector {
       UUID u1 = UUID.randomUUID();
       UUID u2 = UUID.randomUUID();
       writer.startList();
-      ExtensionWriter extensionWriter = writer.extension(new UuidType());
-      extensionWriter.addExtensionTypeWriterFactory(new UuidWriterFactory());
-      extensionWriter.writeExtension(u1);
-      extensionWriter.writeExtension(u2);
-      extensionWriter.writeNull();
+
+      writer.extension(UuidType.INSTANCE).writeExtension(u1);
+      writer.writeExtension(u2);
+      writer.writeNull();
       writer.endList();
 
-      writer.setValueCount(1);
+      writer.setValueCount(3);
 
       // copy values from input to output
       outVector.allocateNew();
-      outVector.copyFrom(0, 0, inVector, new UuidWriterFactory());
-      outVector.setValueCount(1);
+      outVector.copyFrom(0, 0, inVector);
+      outVector.setValueCount(3);
 
       UnionListReader reader = outVector.getReader();
       assertTrue(reader.isSet(), "shouldn't be null");
@@ -1301,15 +1295,86 @@ public class TestListVector {
       FieldReader uuidReader = reader.reader();
       UuidHolder holder = new UuidHolder();
       uuidReader.read(holder);
-      ByteBuffer bb = ByteBuffer.wrap(holder.value);
-      UUID actualUuid = new UUID(bb.getLong(), bb.getLong());
+      UUID actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
       assertEquals(u1, actualUuid);
       reader.next();
       uuidReader = reader.reader();
       uuidReader.read(holder);
-      bb = ByteBuffer.wrap(holder.value);
-      actualUuid = new UUID(bb.getLong(), bb.getLong());
+      actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
       assertEquals(u2, actualUuid);
+    }
+  }
+
+  @Test
+  public void testCopyValueSafeForExtensionType() throws Exception {
+    try (ListVector inVector = ListVector.empty("input", allocator);
+        ListVector outVector = ListVector.empty("output", allocator)) {
+      UnionListWriter writer = inVector.getWriter();
+      writer.allocate();
+
+      // Create first list with UUIDs
+      writer.setPosition(0);
+      UUID u1 = UUID.randomUUID();
+      UUID u2 = UUID.randomUUID();
+      writer.startList();
+      ExtensionWriter extensionWriter = writer.extension(UuidType.INSTANCE);
+      extensionWriter.writeExtension(u1);
+      extensionWriter.writeExtension(u2);
+      writer.endList();
+
+      // Create second list with UUIDs
+      writer.setPosition(1);
+      UUID u3 = UUID.randomUUID();
+      UUID u4 = UUID.randomUUID();
+      writer.startList();
+      extensionWriter = writer.extension(UuidType.INSTANCE);
+      extensionWriter.writeExtension(u3);
+      extensionWriter.writeExtension(u4);
+      extensionWriter.writeNull();
+
+      writer.endList();
+      writer.setValueCount(2);
+
+      // Use TransferPair with ExtensionTypeWriterFactory
+      // This tests the new makeTransferPair API with writerFactory parameter
+      outVector.allocateNew();
+      TransferPair transferPair = inVector.makeTransferPair(outVector);
+      transferPair.copyValueSafe(0, 0);
+      transferPair.copyValueSafe(1, 1);
+      outVector.setValueCount(2);
+
+      // Verify first list
+      UnionListReader reader = outVector.getReader();
+      reader.setPosition(0);
+      assertTrue(reader.isSet(), "first list shouldn't be null");
+      reader.next();
+      FieldReader uuidReader = reader.reader();
+      UuidHolder holder = new UuidHolder();
+      uuidReader.read(holder);
+      UUID actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
+      assertEquals(u1, actualUuid);
+      reader.next();
+      uuidReader = reader.reader();
+      uuidReader.read(holder);
+      actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
+      assertEquals(u2, actualUuid);
+
+      // Verify second list
+      reader.setPosition(1);
+      assertTrue(reader.isSet(), "second list shouldn't be null");
+      reader.next();
+      uuidReader = reader.reader();
+      uuidReader.read(holder);
+      actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
+      assertEquals(u3, actualUuid);
+      reader.next();
+      uuidReader = reader.reader();
+      uuidReader.read(holder);
+      actualUuid = UuidUtility.uuidFromArrowBuf(holder.buffer, 0);
+      assertEquals(u4, actualUuid);
+      reader.next();
+      uuidReader = reader.reader();
+      assertFalse(uuidReader.isSet(), "third element should be null");
     }
   }
 

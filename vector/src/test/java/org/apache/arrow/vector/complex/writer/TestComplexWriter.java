@@ -66,7 +66,6 @@ import org.apache.arrow.vector.complex.impl.UnionListWriter;
 import org.apache.arrow.vector.complex.impl.UnionMapReader;
 import org.apache.arrow.vector.complex.impl.UnionReader;
 import org.apache.arrow.vector.complex.impl.UnionWriter;
-import org.apache.arrow.vector.complex.impl.UuidWriterFactory;
 import org.apache.arrow.vector.complex.reader.BaseReader.StructReader;
 import org.apache.arrow.vector.complex.reader.BigIntReader;
 import org.apache.arrow.vector.complex.reader.FieldReader;
@@ -78,7 +77,7 @@ import org.apache.arrow.vector.complex.writer.BaseWriter.ExtensionWriter;
 import org.apache.arrow.vector.complex.writer.BaseWriter.ListWriter;
 import org.apache.arrow.vector.complex.writer.BaseWriter.MapWriter;
 import org.apache.arrow.vector.complex.writer.BaseWriter.StructWriter;
-import org.apache.arrow.vector.holder.UuidHolder;
+import org.apache.arrow.vector.extension.UuidType;
 import org.apache.arrow.vector.holders.DecimalHolder;
 import org.apache.arrow.vector.holders.DurationHolder;
 import org.apache.arrow.vector.holders.FixedSizeBinaryHolder;
@@ -87,7 +86,9 @@ import org.apache.arrow.vector.holders.NullableDurationHolder;
 import org.apache.arrow.vector.holders.NullableFixedSizeBinaryHolder;
 import org.apache.arrow.vector.holders.NullableTimeStampMilliTZHolder;
 import org.apache.arrow.vector.holders.NullableTimeStampNanoTZHolder;
+import org.apache.arrow.vector.holders.NullableUuidHolder;
 import org.apache.arrow.vector.holders.TimeStampMilliTZHolder;
+import org.apache.arrow.vector.holders.UuidHolder;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -99,13 +100,13 @@ import org.apache.arrow.vector.types.pojo.ArrowType.Union;
 import org.apache.arrow.vector.types.pojo.ArrowType.Utf8;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.arrow.vector.types.pojo.UuidType;
 import org.apache.arrow.vector.util.CallBack;
 import org.apache.arrow.vector.util.DecimalUtility;
 import org.apache.arrow.vector.util.JsonStringArrayList;
 import org.apache.arrow.vector.util.JsonStringHashMap;
 import org.apache.arrow.vector.util.Text;
 import org.apache.arrow.vector.util.TransferPair;
+import org.apache.arrow.vector.util.UuidUtility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1105,6 +1106,13 @@ public class TestComplexWriter {
         new UnionVector("union", allocator, /* field type */ null, /* call-back */ null);
     UnionWriter unionWriter = new UnionWriter(vector);
     unionWriter.allocate();
+
+    UUID uuid = UUID.randomUUID();
+    ByteBuffer bb = ByteBuffer.allocate(16);
+    bb.putLong(uuid.getMostSignificantBits());
+    bb.putLong(uuid.getLeastSignificantBits());
+    byte[] uuidByte = bb.array();
+
     for (int i = 0; i < COUNT; i++) {
       unionWriter.setPosition(i);
       if (i % 5 == 0) {
@@ -1127,6 +1135,12 @@ public class TestComplexWriter {
         holder.buffer = buf;
         unionWriter.write(holder);
         bufs.add(buf);
+      } else if (i % 5 == 4) {
+        UuidHolder holder = new UuidHolder();
+        holder.buffer = allocator.buffer(UuidType.UUID_BYTE_WIDTH);
+        holder.buffer.setBytes(0, uuidByte);
+        unionWriter.write(holder);
+        allocator.releaseBytes(UuidType.UUID_BYTE_WIDTH);
       } else {
         unionWriter.writeFloat4((float) i);
       }
@@ -1152,6 +1166,10 @@ public class TestComplexWriter {
         unionReader.read(holder);
         assertEquals(i, holder.buffer.getInt(0));
         assertEquals(4, holder.byteWidth);
+      } else if (i % 5 == 4) {
+        NullableUuidHolder holder = new NullableUuidHolder();
+        unionReader.read(holder);
+        assertEquals(UuidUtility.uuidFromArrowBuf(holder.buffer, 0), uuid);
       } else {
         assertEquals((float) i, unionReader.readFloat(), 1e-12);
       }
@@ -2509,10 +2527,9 @@ public class TestComplexWriter {
       StructWriter rootWriter = writer.rootAsStruct();
 
       {
-        ExtensionWriter extensionWriter = rootWriter.extension("uuid1", new UuidType());
+        ExtensionWriter extensionWriter = rootWriter.extension("uuid1", UuidType.INSTANCE);
         extensionWriter.setPosition(0);
-        extensionWriter.addExtensionTypeWriterFactory(new UuidWriterFactory());
-        extensionWriter.writeExtension(u1);
+        extensionWriter.writeExtension(u1, UuidType.INSTANCE);
       }
       // read
       StructReader rootReader = new SingleStructReaderImpl(parent).reader("root");
@@ -2521,8 +2538,7 @@ public class TestComplexWriter {
         uuidReader.setPosition(0);
         UuidHolder uuidHolder = new UuidHolder();
         uuidReader.read(uuidHolder);
-        final ByteBuffer bb = ByteBuffer.wrap(uuidHolder.value);
-        UUID actualUuid = new UUID(bb.getLong(), bb.getLong());
+        UUID actualUuid = UuidUtility.uuidFromArrowBuf(uuidHolder.buffer, 0);
         assertEquals(u1, actualUuid);
         assertTrue(uuidReader.isSet());
         assertEquals(uuidReader.getMinorType(), MinorType.EXTENSIONTYPE);
